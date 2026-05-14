@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ libpq-dev curl && \
     rm -rf /var/lib/apt/lists/*
 
-COPY requirements/api.txt requirements.txt
+COPY requirements/prod.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source at build time; local dev mounts override via volume

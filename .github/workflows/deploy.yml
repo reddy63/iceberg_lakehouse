@@ -8,6 +8,7 @@ on:
 
 env:
   PYTHON_VERSION: "3.10"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ─── Test ────────────────────────────────────────────────────────────────────
@@ -67,8 +68,8 @@ jobs:
       FETCH_CRON: "*/5 * * * *"
       FETCH_TARGET_TABLE: weather_events
       FETCH_NAMESPACE: raw
-      OPEN_METEO_LATITUDE: "52.52"
-      OPEN_METEO_LONGITUDE: "13.41"
+      OPEN_METEO_LATITUDE: "17.38"
+      OPEN_METEO_LONGITUDE: "78.47"
 
     steps:
       - uses: actions/checkout@v5
@@ -94,10 +95,10 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: requirements/api.txt
+          cache-dependency-path: requirements/test.txt
 
       - name: Install dependencies
-        run: pip install -r requirements/api.txt
+        run: pip install -r requirements/test.txt
 
       - name: Create MinIO bucket
         run: |
