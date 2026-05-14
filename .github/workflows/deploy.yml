@@ -16,19 +16,8 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      # MinIO — S3-compatible object store
-      minio:
-        image: quay.io/minio/minio:latest
-        env:
-          MINIO_ROOT_USER: admin
-          MINIO_ROOT_PASSWORD: minio123
-        ports:
-          - 9000:9000
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+      # MinIO — needs `server /data` command; GitHub Actions service containers
+      # don't support `command:`, so we start MinIO manually in a step instead.
 
       # PostgreSQL — Iceberg catalog backend
       postgres:
@@ -84,6 +73,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Start MinIO
+        # Service containers don't support custom commands; run MinIO as a
+        # background Docker container with the required `server /data` command.
+        run: |
+          docker run -d \
+            --name minio \
+            --network host \
+            -e MINIO_ROOT_USER=admin \
+            -e MINIO_ROOT_PASSWORD=minio123 \
+            quay.io/minio/minio:latest server /data
+          echo "Waiting for MinIO..."
+          for i in $(seq 1 15); do
+            curl -sf http://localhost:9000/minio/health/live && echo "MinIO ready" && break
+            sleep 2
+          done
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
@@ -93,8 +98,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements/api.txt
 
-      - name: Install MinIO client & create bucket
-        # mc is tiny (~35 MB) vs awscli (~500 MB) — faster CI
+      - name: Create MinIO bucket
         run: |
           curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
           chmod +x /usr/local/bin/mc
