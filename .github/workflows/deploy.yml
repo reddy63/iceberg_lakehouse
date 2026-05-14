@@ -149,6 +149,22 @@ jobs:
             --exclude 'dbt_project/dbt_packages' \
             ./ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/iceberg_lakehouse/
 
+      - name: Setup swap on EC2
+        run: |
+          ssh -o ConnectTimeout=30 -o StrictHostKeyChecking=no \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
+            'if [ ! -f /swapfile ]; then
+               sudo fallocate -l 2G /swapfile
+               sudo chmod 600 /swapfile
+               sudo mkswap /swapfile
+               sudo swapon /swapfile
+               echo "/swapfile swap swap defaults 0 0" | sudo tee -a /etc/fstab
+               echo "✅ 2GB swap created"
+             else
+               echo "✅ swap already exists"
+             fi
+             free -h'
+
       - name: Docker Compose up on EC2
         timeout-minutes: 30
         run: |
