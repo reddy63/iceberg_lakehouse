@@ -8,5 +8,12 @@ pandas==2.2.2
 pyarrow==16.0.0
 pydantic-settings==2.2.1
 psycopg2-binary==2.9.9
-sqlalchemy
-boto3
+sqlalchemy==2.0.49
+# Pin the boto3/botocore/aiobotocore/s3fs triangle to known-compatible versions.
+# Without these pins pip backtracks through 200+ boto3 releases on EC2 (t2.micro
+# has slow I/O), blowing the 30-min Docker build timeout.
+# Verified working: CI test job resolved these on 2026-05-14.
+boto3==1.41.5
+botocore==1.41.5
+aiobotocore==2.26.0
+s3fs==2023.12.2
