@@ -152,7 +152,7 @@ jobs:
       - name: Docker Compose up on EC2
         timeout-minutes: 15
         run: |
-          ssh -o ConnectTimeout=30 -o ServerAliveInterval=30 \
+          ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -o ServerAliveCountMax=10 \
             ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
             'cd /opt/iceberg_lakehouse &&
              docker compose pull --ignore-pull-failures &&
