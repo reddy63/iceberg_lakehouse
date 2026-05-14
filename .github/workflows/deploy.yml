@@ -71,7 +71,7 @@ jobs:
       OPEN_METEO_LONGITUDE: "13.41"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Start MinIO
         # Service containers don't support custom commands; run MinIO as a
@@ -113,7 +113,7 @@ jobs:
         run: pytest tests/ -v --tb=short --junitxml=test-results.xml
 
       - name: Upload test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: always()
         with:
           name: test-results
@@ -128,7 +128,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure SSH
         run: |
