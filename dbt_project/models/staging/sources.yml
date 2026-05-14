@@ -1,0 +1,44 @@
+version: 2
+
+sources:
+  - name: iceberg_raw
+    description: >
+      Raw event data stored as Parquet files in the Iceberg warehouse on MinIO.
+      Written by the FastAPI ingestion service via PyIceberg.
+      Each table maps to a directory under s3://lakehouse/warehouse/raw/<table>/.
+    meta:
+      owner: "data-engineering"
+      storage: "MinIO (s3://lakehouse/warehouse/raw/)"
+      format: "Apache Parquet (Iceberg table)"
+
+    tables:
+      - name: weather_events
+        description: >
+          Hourly weather forecast data auto-fetched every 5 minutes from the
+          Open-Meteo public API (https://open-meteo.com/) by the scheduler service.
+        meta:
+          iceberg_namespace: raw
+          ingest_endpoint: "POST http://api:8000/ingest?table=weather_events&namespace=raw"
+        columns:
+          - name: event_time
+            description: "ISO-8601 hourly timestamp of the forecast slot"
+            tests:
+              - not_null
+          - name: temperature_2m
+            description: "Air temperature at 2 m above ground (°C)"
+          - name: relative_humidity_2m
+            description: "Relative humidity at 2 m (%)"
+          - name: wind_speed_10m
+            description: "Wind speed at 10 m above ground (km/h)"
+          - name: precipitation
+            description: "Precipitation amount (mm)"
+          - name: weather_code
+            description: "WMO weather interpretation code"
+          - name: surface_pressure
+            description: "Surface air pressure (hPa)"
+          - name: latitude
+            description: "Location latitude used for the forecast query"
+          - name: longitude
+            description: "Location longitude used for the forecast query"
+          - name: fetched_at
+            description: "UTC timestamp when this batch was fetched by the scheduler"

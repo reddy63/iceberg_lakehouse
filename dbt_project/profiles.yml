@@ -1,0 +1,40 @@
+# dbt profiles.yml for iceberg_lakehouse
+# ─────────────────────────────────────────────────────────────────────────────
+# DuckDB reads Parquet files directly from MinIO over S3.
+# Credentials are injected from the environment at runtime.
+#
+# Usage:
+#   dbt run --profiles-dir /app/dbt_project
+# ─────────────────────────────────────────────────────────────────────────────
+
+lakehouse_duckdb:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "/app/dbt_project/target/lakehouse_dev.duckdb"
+      threads: 4
+      extensions:
+        - httpfs
+        - parquet
+      settings:
+        # MinIO / S3 access for DuckDB httpfs
+        s3_endpoint: "{{ env_var('MINIO_ENDPOINT', 'minio:9000') | replace('http://', '') }}"
+        s3_access_key_id: "{{ env_var('MINIO_ACCESS_KEY', 'minioadmin') }}"
+        s3_secret_access_key: "{{ env_var('MINIO_SECRET_KEY', 'minioadmin') }}"
+        s3_use_ssl: "false"
+        s3_url_style: "path"
+
+    prod:
+      type: duckdb
+      path: "/tmp/lakehouse_prod.duckdb"
+      threads: 8
+      extensions:
+        - httpfs
+        - parquet
+      settings:
+        s3_endpoint: "{{ env_var('MINIO_ENDPOINT') | replace('http://', '') }}"
+        s3_access_key_id: "{{ env_var('MINIO_ACCESS_KEY') }}"
+        s3_secret_access_key: "{{ env_var('MINIO_SECRET_KEY') }}"
+        s3_use_ssl: "false"
+        s3_url_style: "path"

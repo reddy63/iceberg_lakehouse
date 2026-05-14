@@ -1,0 +1,159 @@
+version: "3.9"
+
+# ─── Shared network ──────────────────────────────────────────────────────────
+networks:
+  lakehouse:
+    driver: bridge
+
+# ─── Named volumes ───────────────────────────────────────────────────────────
+volumes:
+  minio_data:
+  postgres_data:
+
+services:
+
+  # ── Object storage (S3-compatible) ─────────────────────────────────────────
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lakehouse
+
+  # ── Iceberg REST catalog (optional Postgres backend) ───────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: iceberg_catalog_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-iceberg_catalog}
+      POSTGRES_USER: ${POSTGRES_USER:-iceberg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iceberg}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iceberg}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lakehouse
+
+  # ── MinIO bucket initialiser (one-shot) ───────────────────────────────────
+  minio-init:
+    image: quay.io/minio/mc:latest
+    container_name: minio_bucket_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - lakehouse
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-lakehouse}
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 $$MINIO_ACCESS_KEY $$MINIO_SECRET_KEY &&
+        mc mb --ignore-existing local/$$MINIO_BUCKET &&
+        echo '✅ Bucket ready: '$$MINIO_BUCKET
+      "
+    restart: on-failure
+
+  # ── FastAPI ingest service ─────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: ingest_api
+    env_file: .env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./ingestion:/app/ingestion
+      - ./config:/app/config
+      - ./tests:/app/tests
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully  # bucket must exist first
+    networks:
+      - lakehouse
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── dbt transformation service ────────────────────────────────────────────
+  dbt:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dbt
+    container_name: dbt_runner
+    env_file: .env
+    volumes:
+      - ./dbt_project:/app/dbt_project
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - lakehouse
+    # One-shot runner; re-run with `make dbt-run`
+    command: ["dbt", "run", "--profiles-dir", "/app/dbt_project"]
+
+  # ── Streamlit dashboard ────────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.streamlit
+    container_name: streamlit_dashboard
+    env_file: .env
+    ports:
+      - "${STREAMLIT_PORT:-8501}:8501"
+    volumes:
+      - ./dashboard:/app/dashboard
+      - ./dbt_project/target:/app/dbt_target:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - lakehouse
+
+  # ── Compaction + weather-fetch scheduler ───────────────────────────────────
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.scheduler
+    container_name: compaction_scheduler
+    env_file: .env
+    volumes:
+      - ./jobs:/app/jobs
+      - ./config:/app/config
+      - ./ingestion:/app/ingestion   # fetcher.py lives here
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy   # catalog backend
+      api:
+        condition: service_healthy   # scheduler POSTs to /ingest
+    networks:
+      - lakehouse

@@ -1,0 +1,171 @@
+name: CI/CD – Iceberg Lakehouse
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  # ─── Test ────────────────────────────────────────────────────────────────────
+  test:
+    name: Run pytest
+    runs-on: ubuntu-latest
+
+    services:
+      # MinIO — S3-compatible object store
+      minio:
+        image: quay.io/minio/minio:latest
+        env:
+          MINIO_ROOT_USER: admin
+          MINIO_ROOT_PASSWORD: minio123
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      # PostgreSQL — Iceberg catalog backend
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: iceberg_catalog
+          POSTGRES_USER: iceberg
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U iceberg"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # ── MinIO ─────────────────────────────────────────────────────────────────
+      MINIO_ENDPOINT: http://localhost:9000
+      MINIO_ACCESS_KEY: admin
+      MINIO_SECRET_KEY: minio123
+      MINIO_BUCKET: lakehouse
+
+      # ── Iceberg Catalog — PostgreSQL ──────────────────────────────────────────
+      CATALOG_NAME: local
+      CATALOG_URI: ${{ secrets.CATALOG_URI }}
+      CATALOG_WAREHOUSE: s3://lakehouse/warehouse
+
+      # ── PostgreSQL ────────────────────────────────────────────────────────────
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: iceberg_catalog
+      POSTGRES_USER: iceberg
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+
+      # ── FastAPI ───────────────────────────────────────────────────────────────
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      LOG_LEVEL: info
+
+      # ── Scheduler ─────────────────────────────────────────────────────────────
+      COMPACTION_CRON: "0 2 * * *"
+      SNAPSHOT_EXPIRY_DAYS: "7"
+
+      # ── Weather Fetcher ───────────────────────────────────────────────────────
+      API_URL: http://localhost:8000
+      FETCH_CRON: "*/5 * * * *"
+      FETCH_TARGET_TABLE: weather_events
+      FETCH_NAMESPACE: raw
+      OPEN_METEO_LATITUDE: "52.52"
+      OPEN_METEO_LONGITUDE: "13.41"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements/api.txt
+
+      - name: Install MinIO client & create bucket
+        # mc is tiny (~35 MB) vs awscli (~500 MB) — faster CI
+        run: |
+          curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+          chmod +x /usr/local/bin/mc
+          mc alias set local http://localhost:9000 admin minio123
+          mc mb local/lakehouse
+
+      - name: Lint (ruff)
+        run: ruff check ingestion/ config/ jobs/ dashboard/
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short --junitxml=test-results.xml
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results.xml
+
+  # ─── Deploy to EC2 ───────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Rsync project to EC2
+        run: |
+          rsync -avz \
+            --exclude '.git' \
+            --exclude '.env' \
+            --exclude '__pycache__' \
+            --exclude '*.pyc' \
+            --exclude '.pytest_cache' \
+            --exclude 'dbt_project/target' \
+            --exclude 'dbt_project/dbt_packages' \
+            ./ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/iceberg_lakehouse/
+
+      - name: Docker Compose up on EC2
+        timeout-minutes: 15
+        run: |
+          ssh -o ConnectTimeout=30 -o ServerAliveInterval=30 \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
+            'cd /opt/iceberg_lakehouse &&
+             docker compose pull --ignore-pull-failures &&
+             docker compose up --build -d &&
+             docker compose ps'
+
+      - name: Health check (with retry)
+        # 12 attempts × 15 s = 180 s max
+        run: |
+          echo "Waiting for API to become healthy…"
+          for i in $(seq 1 12); do
+            if curl -sf http://${{ secrets.EC2_HOST }}:8000/health; then
+              echo ""
+              echo "✅ API is healthy (attempt $i)"
+              exit 0
+            fi
+            echo "⏳ Attempt $i/12 — retrying in 15 s…"
+            sleep 15
+          done
+          echo "❌ API did not become healthy after 180 s"
+          exit 1

@@ -1,0 +1,22 @@
+FROM python:3.12-slim
+
+LABEL maintainer="iceberg-lakehouse"
+LABEL description="FastAPI ingestion service with PyIceberg, boto3, pandas, pyarrow"
+
+WORKDIR /app
+
+# OS deps for pyarrow / pandas native builds
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ libpq-dev curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY requirements/api.txt requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source at build time; local dev mounts override via volume
+COPY ingestion/ /app/ingestion/
+COPY config/    /app/config/
+
+EXPOSE 8000
+
+CMD ["uvicorn", "ingestion.api:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

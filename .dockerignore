@@ -1,0 +1,48 @@
+# ─── Docker build context exclusions ─────────────────────────────────────────
+# Keeps Docker images lean and prevents secrets from leaking into layers.
+
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Environment / secrets — NEVER bake these into an image
+.env
+.env.example
+
+# Python caches
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+dist/
+build/
+.eggs/
+
+# Test & lint caches
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov/
+*.xml
+
+# dbt artefacts (large generated files)
+dbt_project/target/
+dbt_project/dbt_packages/
+dbt_project/logs/
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# Documentation (not needed in containers)
+README.md
+DEPLOYMENT.md
+*.md
+docs/

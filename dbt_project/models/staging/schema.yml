@@ -1,0 +1,50 @@
+version: 2
+
+models:
+  - name: stg_weather
+    description: >
+      Cleaned and typed staging layer for raw weather events.
+      Reads Parquet files directly from MinIO via DuckDB httpfs.
+      Tolerates schema evolution across files using union_by_name=true.
+      Materialised as a VIEW — no extra storage cost.
+
+    columns:
+      - name: event_id
+        description: "Unique identifier for the forecast slot (derived from event_time)"
+        tests:
+          - not_null
+          - unique
+
+      - name: event_ts
+        description: "Parsed timestamp of the forecast slot (UTC)"
+        tests:
+          - not_null
+
+      - name: event_date
+        description: "Date portion of event_ts, used for partitioning aggregations"
+        tests:
+          - not_null
+
+      - name: temperature_2m
+        description: "Temperature at 2m (°C)"
+
+      - name: relative_humidity_2m
+        description: "Relative humidity at 2m (%)"
+
+      - name: wind_speed_10m
+        description: "Wind speed at 10m (km/h)"
+
+      - name: precipitation
+        description: "Precipitation amount (mm)"
+
+      - name: surface_pressure
+        description: "Surface pressure (hPa)"
+
+      - name: weather_code
+        description: "WMO weather interpretation code"
+
+      - name: latitude
+        description: "Location latitude"
+        
+      - name: longitude
+        description: "Location longitude"
