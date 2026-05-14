@@ -94,6 +94,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
+          cache-dependency-path: requirements/api.txt
 
       - name: Install dependencies
         run: pip install -r requirements/api.txt
