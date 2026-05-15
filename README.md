@@ -1,312 +1,264 @@
-# 🏔️ Iceberg Lakehouse
+<div align="center">
 
-A **production-grade Data Lakehouse** built on Apache Iceberg, running entirely in Docker.  
-Automatically ingests live weather data from [Open-Meteo](https://open-meteo.com/) every 5 minutes,
-transforms it with dbt, and visualises it in a Streamlit dashboard — with zero manual steps.
+# Iceberg Lakehouse
 
----
+[![CI/CD](https://github.com/reddy63/iceberg_lakehouse/actions/workflows/deploy.yml/badge.svg)](https://github.com/reddy63/iceberg_lakehouse/actions/workflows/deploy.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![PyIceberg](https://img.shields.io/badge/PyIceberg-0.7.0-5C6BC0)](https://py.iceberg.apache.org/)
+[![dbt](https://img.shields.io/badge/dbt--duckdb-1.8-FF694B?logo=dbt&logoColor=white)](https://docs.getdbt.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-dashboard-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
-## Architecture
+**A production-style open lakehouse pipeline — ingest → store → transform → visualise.**  
+Live weather data ingested every 5 minutes, stored as Apache Iceberg tables on MinIO,  
+transformed by dbt + DuckDB, and served on a Streamlit dashboard. Deployed to EC2 via GitHub Actions.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Docker Network                          │
-│                                                                 │
-│  Open-Meteo API ──► Scheduler ──► POST /ingest                  │
-│  (public, no key)   (every 5 min)      │                        │
-│                                        ▼                        │
-│  Your CSV/JSON ─────────────────► FastAPI :8000                 │
-│                                        │ PyIceberg write        │
-│                                        ▼                        │
-│                              MinIO :9000/:9001                  │
-│                          (S3-compatible, Parquet)               │
-│                                        │                        │
-│                          ┌─────────────┴──────────┐            │
-│                          ▼                         ▼            │
-│                    dbt (DuckDB)           Scheduler             │
-│                    stg_events             (nightly)             │
-│                    fct_events             compaction +          │
-│                          │                snapshot expiry       │
-│                          ▼                                      │
-│                   Streamlit :8501                               │
-│                   (Table Browser,                               │
-│                    Time Travel,                                  │
-│                    dbt Metrics)                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Services
-
-| Service | Port | Technology | Role |
-|---|---|---|---|
-| `minio` | 9000, 9001 | MinIO | S3-compatible object store for Parquet files |
-| `minio-init` | — | MinIO Client (mc) | One-shot: creates the `lakehouse` bucket on startup |
-| `postgres` | 5432 | PostgreSQL 16 | Iceberg catalog backend (metadata) |
-| `api` | 8000 | FastAPI + PyIceberg | Accepts CSV/JSON, auto-detects schema, writes Iceberg |
-| `dbt` | — | dbt-core + dbt-DuckDB | Transforms raw Parquet into analytics marts |
-| `dashboard` | 8501 | Streamlit + DuckDB | Interactive data explorer |
-| `scheduler` | — | APScheduler | Weather fetch (every 5 min) + compaction (nightly) |
+</div>
 
 ---
 
-## Prerequisites
+## How it works
 
-| Tool | Version | Install |
+```
+Open-Meteo API (free, no key)
+        │  24 hourly rows every 5 min
+        ▼
+┌─────────────────┐     POST /ingest      ┌──────────────────────────────┐
+│   Scheduler     │ ───────────────────►  │  FastAPI  :8000              │
+│  (APScheduler)  │                       │  • parse CSV / JSON          │
+│  every 5 min    │                       │  • detect schema drift       │
+└─────────────────┘                       │  • write to Iceberg (append) │
+                                          └──────────────┬───────────────┘
+                                                         │ PyIceberg
+                                                         ▼
+                                          ┌──────────────────────────────┐
+                                          │  MinIO  :9000                │
+                                          │  s3://lakehouse/warehouse/   │
+                                          │  raw.db/weather_events/      │
+                                          │  data/*.parquet              │
+                                          │  (Apache Iceberg format)     │
+                                          └──────────────┬───────────────┘
+                                                         │ DuckDB httpfs
+                                                         ▼
+                                          ┌──────────────────────────────┐
+                                          │  dbt  (DuckDB adapter)       │
+                                          │  stg_weather  →  VIEW        │
+                                          │  fct_weather_daily  →  TABLE │
+                                          └──────────────┬───────────────┘
+                                                         │
+                                                         ▼
+                                          ┌──────────────────────────────┐
+                                          │  Streamlit  :8501            │
+                                          │  • Table Browser (raw rows)  │
+                                          │  • dbt Metrics (daily aggs)  │
+                                          └──────────────────────────────┘
+
+PostgreSQL  :5432  ── Iceberg SQL catalog (table metadata + snapshot history)
+```
+
+---
+
+## Stack
+
+| Layer | Technology | Purpose |
 |---|---|---|
-| Docker | 24+ | https://docs.docker.com/engine/install/ |
-| Docker Compose | v2 plugin | included with Docker Desktop |
-| GNU Make | any | `sudo apt install make` |
-| Git | any | `sudo apt install git` |
+| Ingestion API | FastAPI + PyIceberg 0.7.0 | Accepts CSV/JSON, auto-detects schema, writes Iceberg |
+| Object store | MinIO (S3-compatible) | Stores Parquet data files + Iceberg metadata |
+| Table format | Apache Iceberg | ACID transactions, schema evolution, snapshot history |
+| Catalog | PyIceberg SQL catalog → PostgreSQL | Tracks table locations and schema versions |
+| Transformation | dbt-duckdb | `stg_weather` (view) → `fct_weather_daily` (daily aggregates) |
+| Data source | Open-Meteo API | Free hourly weather — no API key required |
+| Scheduler | APScheduler | Fetches weather every 5 min; nightly Iceberg compaction at 02:00 UTC |
+| Dashboard | Streamlit + DuckDB | Table browser + daily metric charts |
+| CI/CD | GitHub Actions | pytest → deploy to EC2 via rsync + docker compose |
+| Tests | pytest, ruff, moto | 34 unit tests; S3 mocked with moto |
 
 ---
 
-## Quick Start
+## Services
+
+| Container | Port | Description |
+|---|---|---|
+| `ingest_api` | `8000` | FastAPI ingestion service |
+| `minio` | `9000` / `9001` | Object store / web console |
+| `iceberg_catalog_db` | `5432` | PostgreSQL Iceberg catalog |
+| `compaction_scheduler` | — | Weather fetch + nightly compaction |
+| `streamlit_dashboard` | `8501` | Streamlit UI |
+| `dbt` | — | One-shot dbt run container |
+| `minio-init` | — | One-shot MinIO bucket initialisation |
+
+---
+
+## Quickstart
+
+**Prerequisites:** Docker + Docker Compose, Git
 
 ```bash
-# 1. Clone the repository
-git clone <your-repo-url>
+# 1. Clone
+git clone https://github.com/reddy63/iceberg_lakehouse.git
 cd iceberg_lakehouse
 
-# 2. Copy environment config (edit values if needed)
+# 2. Configure
 cp .env.example .env
+# Edit .env — set your MinIO/Postgres passwords,
+# and change OPEN_METEO_LATITUDE/LONGITUDE for your city
 
-# 3. Build and start all services
-make up
+# 3. Start all 7 services
+docker compose up --build -d
 
-# 4. Check everything is running
-make ps
+# 4. Run dbt transformations
+make dbt-run
 
 # 5. Open the dashboard
 open http://localhost:8501
 ```
 
-> **First run**: The scheduler automatically fetches weather data on startup.  
-> Within 30 seconds you should see rows appear in the `raw.weather_events` table.
-
----
-
-## Service URLs
-
 | Service | URL |
 |---|---|
-| FastAPI (Swagger UI) | http://localhost:8000/docs |
-| FastAPI (health check) | http://localhost:8000/health |
-| MinIO web console | http://localhost:9001 (user: `minioadmin`, pass: `minioadmin`) |
 | Streamlit dashboard | http://localhost:8501 |
+| FastAPI docs (Swagger) | http://localhost:8000/docs |
+| MinIO console | http://localhost:9001 |
 
 ---
 
-## Makefile Commands
+## API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Liveness check |
+| `POST` | `/ingest` | Upload CSV or JSON → append to Iceberg table |
+| `GET` | `/tables` | List all tables in a namespace (default: `raw`) |
+| `GET` | `/snapshots/{table}` | List Iceberg snapshot history (time-travel) |
+
+### Ingest example
 
 ```bash
-make up           # Build and start all services (detached)
-make down         # Stop and remove containers + volumes
-make restart      # Full rebuild and restart
-make logs         # Tail all service logs
-make ps           # Show running containers
-
-make dbt-run      # Run dbt models (stg_events → fct_events)
-make dbt-test     # Run dbt data quality tests
-make dbt-docs     # Generate + serve dbt docs (port 8080)
-
-make test         # Run pytest inside the API container
-make test-local   # Run pytest locally (no Docker)
-
-make lint         # Lint with ruff
-make format       # Auto-format with ruff
-
-make create-bucket # Manually create MinIO bucket (done automatically on startup)
-make clean        # Remove __pycache__ and compiled artefacts
+curl -X POST http://localhost:8000/ingest \
+  -F 'file=@readings.csv;type=text/csv' \
+  -F 'table=sensor_data'
 ```
 
----
-
-## Ingesting Your Own Data
-
-### Upload a CSV file
-```bash
-curl -X POST "http://localhost:8000/ingest?table=my_table&namespace=raw" \
-     -F "file=@/path/to/data.csv"
-```
-
-### Upload a JSON file
-```bash
-curl -X POST "http://localhost:8000/ingest?table=my_table&namespace=raw" \
-     -F "file=@/path/to/data.json"
-```
-
-### Response
 ```json
 {
-  "table": "raw.my_table",
-  "rows_written": 1500,
+  "table": "raw.sensor_data",
+  "rows_written": 120,
   "schema_drift": {
     "has_drift": false,
     "new_columns": [],
     "removed_columns": [],
     "type_changes": {}
   },
-  "columns": ["id", "name", "amount", "created_at"]
+  "columns": ["ts", "device_id", "temp_c", "humidity"]
 }
 ```
 
-**Schema evolution is automatic** — if your next upload has new columns, they are
-added to the Iceberg table non-destructively. Existing data is unaffected.
-
 ---
 
-## Automated Weather Ingestion
+## dbt Models
 
-The `scheduler` service pulls hourly weather forecasts from [Open-Meteo](https://open-meteo.com/)
-every **5 minutes** and pushes them to `raw.weather_events`.
-
-### Change the location
-Edit `.env`:
-```bash
-OPEN_METEO_LATITUDE=28.61    # New Delhi
-OPEN_METEO_LONGITUDE=77.20
 ```
-Then restart the scheduler:
-```bash
-docker compose restart scheduler
+dbt_project/models/
+├── staging/
+│   ├── sources.yml            # declares iceberg_raw source
+│   ├── schema.yml             # not_null + unique tests
+│   └── stg_weather.sql        # VIEW — parses timestamps, deduplicates rows
+│                              # (QUALIFY keeps latest fetch per event_ts)
+└── marts/
+    ├── schema.yml             # not_null tests on fct_weather_daily
+    └── fct_weather_daily.sql  # TABLE — daily avg/min/max temp,
+                               # humidity, wind speed, precipitation
 ```
 
-### Change the fetch interval
 ```bash
-FETCH_CRON=*/15 * * * *   # every 15 minutes
+make dbt-run     # run all models
+make dbt-test    # run + test in one step
+make dbt-docs    # generate and serve docs on :8080
 ```
 
 ---
 
-## dbt Transformations
-
-```
-raw.weather_events / raw.events
-        │
-        ▼  (stg_events — VIEW)
-    Clean + cast + deduplicate
-        │
-        ▼  (fct_events — TABLE)
-    Daily aggregations per event_type + source:
-    total_events, unique_users, total_amount, avg_amount
-```
-
-```bash
-make dbt-run    # run transformations
-make dbt-test   # check not_null, unique, accepted_values constraints
-```
-
----
-
-## Environment Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `MINIO_ENDPOINT` | `http://minio:9000` | MinIO S3 API endpoint |
-| `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
-| `MINIO_SECRET_KEY` | `minioadmin` | MinIO secret key |
-| `MINIO_BUCKET` | `lakehouse` | S3 bucket name |
-| `CATALOG_URI` | `sqlite:///tmp/iceberg_catalog.db` | Iceberg catalog URI (SQLite or Postgres) |
-| `CATALOG_WAREHOUSE` | `s3://lakehouse/warehouse` | Iceberg warehouse root |
-| `API_PORT` | `8000` | FastAPI port |
-| `STREAMLIT_PORT` | `8501` | Dashboard port |
-| `FETCH_CRON` | `*/5 * * * *` | Weather fetch cron expression |
-| `FETCH_TARGET_TABLE` | `weather_events` | Iceberg table for weather data |
-| `OPEN_METEO_LATITUDE` | `52.52` | Location latitude (Berlin default) |
-| `OPEN_METEO_LONGITUDE` | `13.41` | Location longitude (Berlin default) |
-| `COMPACTION_CRON` | `0 2 * * *` | Nightly compaction cron |
-| `SNAPSHOT_EXPIRY_DAYS` | `7` | Days to retain Iceberg snapshots |
-
----
-
-## Running Tests
-
-```bash
-# All tests (requires dependencies installed)
-make test-local
-
-# Inside Docker
-make test
-```
-
-Test coverage:
-- `test_schema_detector.py` — 8 unit tests (type inference, drift detection)
-- `test_iceberg_writer.py`  — 4 integration tests (create, append, evolve)
-- `test_api.py`             — 13 integration tests (all 4 endpoints)
-- `test_fetcher.py`         — 5 unit tests (weather fetch + ingest, mocked)
-
----
-
-## Project Structure
+## Project structure
 
 ```
 iceberg_lakehouse/
-├── .env                      # Local environment config (git-ignored)
-├── .env.example              # Template — copy to .env
-├── .dockerignore             # Excludes .env, caches, git from Docker builds
-├── Makefile                  # Developer commands
-├── docker-compose.yml        # All 7 services
-├── DEPLOYMENT.md             # EC2 deployment & GitHub Secrets guide
-│
+├── .github/workflows/deploy.yml   # CI: pytest → rsync → EC2 deploy
 ├── config/
-│   ├── settings.py           # Pydantic-settings: all env var definitions
-│   └── iceberg_config.py     # Iceberg SqlCatalog factory (cached singleton)
-│
-├── docker/
-│   ├── Dockerfile.api        # FastAPI service
-│   ├── Dockerfile.dbt        # dbt runner
-│   ├── Dockerfile.scheduler  # APScheduler (fetch + compaction)
-│   └── Dockerfile.streamlit  # Dashboard
-│
-├── ingestion/
-│   ├── api.py                # FastAPI app: /ingest /health /tables /snapshots
-│   ├── iceberg_writer.py     # PyIceberg: create table, evolve schema, append
-│   ├── schema_detector.py    # Arrow→Iceberg type mapping + drift reports
-│   └── fetcher.py            # Open-Meteo API client + POST to /ingest
-│
-├── jobs/
-│   ├── main.py               # Combined scheduler entry-point
-│   ├── fetcher_job.py        # APScheduler wrapper for weather fetch
-│   └── compaction.py         # Iceberg file compaction + snapshot expiry
-│
-├── dbt_project/
-│   ├── dbt_project.yml
-│   ├── profiles.yml          # DuckDB + MinIO S3 connection
-│   └── models/
-│       ├── staging/
-│       │   ├── sources.yml   # Documents raw MinIO data sources
-│       │   ├── schema.yml    # Data quality tests for stg_events
-│       │   └── stg_events.sql
-│       └── marts/
-│           ├── schema.yml    # Data quality tests for fct_events
-│           └── fct_events.sql
-│
+│   ├── iceberg_config.py          # catalog + namespace initialisation
+│   └── settings.py                # pydantic-settings env loader
 ├── dashboard/
-│   └── app.py                # Streamlit: Table Browser, Time Travel, dbt Metrics
-│
+│   └── app.py                     # Streamlit UI
+├── dbt_project/                   # dbt models, macros, profiles, schema tests
+├── docker/
+│   ├── Dockerfile.api
+│   ├── Dockerfile.dbt
+│   ├── Dockerfile.scheduler
+│   └── Dockerfile.streamlit
+├── ingestion/
+│   ├── api.py                     # FastAPI routes
+│   ├── fetcher.py                 # Open-Meteo client → POST /ingest
+│   ├── iceberg_writer.py          # PyIceberg write + schema evolution
+│   └── schema_detector.py        # Arrow schema inference + drift detection
+├── jobs/
+│   ├── compaction.py              # Iceberg compaction + snapshot expiry
+│   ├── fetcher_job.py             # APScheduler wrapper
+│   └── main.py                   # Scheduler entrypoint
 ├── requirements/
-│   ├── api.txt
-│   ├── dbt.txt
-│   ├── scheduler.txt
-│   └── streamlit.txt
-│
-└── tests/
-    ├── conftest.py           # Shared fixtures (mock catalog, test client)
-    ├── test_api.py           # FastAPI endpoint tests
-    ├── test_iceberg_writer.py
-    ├── test_schema_detector.py
-    └── test_fetcher.py
+│   ├── prod.txt                   # Production deps — installed in Docker images
+│   └── test.txt                   # Test deps (moto, pytest, ruff) — CI only
+├── tests/                         # 34 pytest tests
+├── .env.example                   # Environment variable template
+├── docker-compose.yml
+├── Makefile
+└── DEPLOYMENT.md                  # EC2 setup + GitHub Secrets guide
 ```
 
 ---
 
-## Deployment to EC2
+## Make commands
 
-See [DEPLOYMENT.md](./DEPLOYMENT.md) for:
-- Required GitHub Secrets (`EC2_SSH_KEY`, `EC2_HOST`, `EC2_USER`)
-- EC2 server setup steps
-- How the CI/CD pipeline works
-- Manual deployment instructions
+```bash
+make up           # build and start all services
+make down         # stop and remove containers + volumes
+make restart      # full rebuild
+make logs         # tail all service logs
+make dbt-run      # run dbt models
+make dbt-test     # run + test dbt models
+make test         # pytest inside the API container
+make lint         # ruff check
+make format       # ruff format
+make clean        # remove __pycache__ / .pyc
+```
+
+---
+
+## CI/CD
+
+```
+push to main
+ │
+ ├─ Run pytest  (ubuntu-latest)
+ │   ├─ Start MinIO + PostgreSQL service containers
+ │   ├─ pip install requirements/test.txt
+ │   ├─ ruff check
+ │   └─ pytest tests/ -v  →  34/34 pass
+ │
+ └─ Deploy to EC2  (requires pytest pass)
+     ├─ rsync project files to EC2
+     ├─ Add 2 GB swap  (t2.micro OOM protection)
+     ├─ docker compose up --build -d
+     └─ GET /health  (12 retries × 15 s)
+```
+
+**Required GitHub Secrets:**
+
+| Secret | Description |
+|---|---|
+| `EC2_SSH_KEY` | Private key (PEM) for your EC2 instance |
+| `EC2_HOST` | Public IP or DNS hostname |
+| `EC2_USER` | SSH user (`ubuntu` for Ubuntu AMIs) |
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for full EC2 setup instructions.
 
 ---
 

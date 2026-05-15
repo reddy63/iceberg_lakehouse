@@ -42,3 +42,9 @@ Thumbs.db
 # Data / Parquet
 *.parquet
 *.arrow
+
+# dbt user-specific file (auto-generated per developer)
+dbt_project/.user.yml
+
+# Old monolithic requirements (split into prod.txt / test.txt)
+requirements/api.txt
